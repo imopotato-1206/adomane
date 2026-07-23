@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>業務時間・共有メモ管理システム</title>
+    <!-- SheetJS CDN -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @font-face {
+            font-family: 'CustomFont';
+            src: url('./font03.otf') format('opentype');
+        }
+        body { 
+            font-family: 'CustomFont', sans-serif; 
+            background-image: url('back1.png');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+            min-height: 100vh;
+        }
+        .page { display: none; }
+        .page.active { display: block; }
+        
+        /* Nav buttons */
+        .btn-nav { transition: all 0.2s; background-color: #4b5563; color: white; }
+        .btn-nav.active-nav { background-color: #1e3a8a; }
+        
+        /* Mode buttons */
+        .btn-mode { transition: all 0.2s; background-color: #f9fafb; color: #374151; border: 1px solid #d1d5db; }
+        .btn-mode.active-mode-blue { background-color: #1e40af; color: white; }
+        .btn-mode.active-mode-green { background-color: #065f46; color: white; }
+        
+        /* Table Headers */
+        th.sortable { cursor: pointer; user-select: none; }
+        th.sortable:hover { background-color: #e5e7eb; }
+    </style>
+</head>
+<body class="p-4 md:p-8 flex items-center justify-center min-h-screen">
+
+    <!-- 
+      【注釈】画面比率(横:縦)を変える場合は下の 'aspect-[12/16]' の数字を変更してください。
+      例: 9:16にしたい場合は 'aspect-[9/16]' に、1:1にしたい場合は 'aspect-square' に変更可能です。
+      横幅の最大サイズを変える場合は 'max-w-5xl' (max-w-lg, max-w-2xl, max-w-6xl等) を変更してください。
+    -->
+    <div class="w-full max-w-5xl aspect-[12/16] bg-white/90 p-6 rounded-lg shadow-2xl overflow-y-auto">
+        <!-- ヘッダー画像 -->
+        <div class="mb-6">
+            <img src="header1.png" alt="Header" class="w-full h-auto rounded-lg shadow">
+        </div>
+
+        <header class="bg-white shadow rounded-lg p-6 mb-6 flex flex-col items-center">
+            <h1 class="text-2xl font-bold text-gray-800">業務時間・共有メモ管理システム</h1>
+            <div class="mt-4 flex gap-4 justify-center">
+                <button id="nav-hours" class="btn-nav active-nav px-4 py-2 rounded" onclick="showPage('hours')">業務時間表示</button>
+                <button id="nav-memo" class="btn-nav px-4 py-2 rounded" onclick="showPage('memo')">社員間共有メモ</button>
+            </div>
+        </header>
+
+        <main>
+            <div id="page-hours" class="page active">
+                <div class="bg-white p-6 rounded-lg shadow mb-6">
+                    <input type="file" id="excelFile" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 mb-4">
+                    
+                    <div id="progressContainer" class="hidden mb-4">
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div id="statusMsg" class="hidden p-4 rounded mb-4"></div>
+                    
+                    <div class="flex flex-wrap gap-2 mb-4 p-4 bg-gray-50 rounded border">
+                        <div class="flex gap-2">
+                            <button id="mode-avg" class="btn-mode active-mode-blue px-4 py-2 rounded" onclick="setDisplayMode('avg')">平均表示</button>
+                            <button id="mode-maxmin" class="btn-mode px-4 py-2 rounded" onclick="setDisplayMode('maxmin')">最大/最小表示</button>
+                        </div>
+                        <div class="flex gap-2 ml-auto">
+                            <input type="text" id="empSearch" placeholder="社員番号を入力..." class="border rounded px-3 py-2 w-48">
+                            <button class="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700" onclick="searchSpecificEmployee()">検索</button>
+                        </div>
+                    </div>
+                    
+                    <div id="tableContainer" class="bg-white p-4 rounded shadow border overflow-x-auto min-h-[200px]">
+                        <p class="text-gray-500 text-center py-10">Excelファイルを読み込むとここに結果が表示されます。</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="page-memo" class="page">
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div id="memoBoard" class="bg-gray-50 p-4 h-64 overflow-y-auto mb-4 border rounded"></div>
+                    <div class="flex gap-2">
+                        <input type="text" id="memoInput" class="flex-grow border p-2 rounded" placeholder="メモを入力...">
+                        <button class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700" onclick="addMemo()">送信</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let globalEmployeeDatabase = {};
+        let currentMode = 'avg';
+        let specificId = null;
+        let sortCol = 'id';
+        let sortAsc = true;
+
+        function showPage(id) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('page-' + id).classList.add('active');
+            document.querySelectorAll('.btn-nav').forEach(btn => btn.classList.remove('active-nav'));
+            document.getElementById('nav-' + id).classList.add('active-nav');
+        }
+
+        function setDisplayMode(mode) {
+            currentMode = mode;
+            specificId = null;
+            document.querySelectorAll('.btn-mode').forEach(btn => {
+                btn.classList.remove('active-mode-blue');
+                btn.classList.remove('active-mode-green');
+            });
+            const target = document.getElementById('mode-' + mode);
+            target.classList.add(mode === 'avg' ? 'active-mode-blue' : 'active-mode-green');
+            sortCol = 'id'; 
+            sortAsc = true;
+            renderTable();
+        }
+
+        function searchSpecificEmployee() {
+            const val = document.getElementById('empSearch').value.trim();
+            if (!val) return;
+            if (!globalEmployeeDatabase[val]) {
+                alert("指定された社員番号が見つかりませんでした。");
+                return;
+            }
+            specificId = val;
+            renderTable();
+        }
+
+        document.getElementById('excelFile').addEventListener('change', function(e) {
+            const statusMsg = document.getElementById('statusMsg');
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            
+            statusMsg.className = "p-4 rounded mb-4 bg-blue-100 text-blue-700";
+            statusMsg.classList.remove('hidden');
+            statusMsg.textContent = "ファイル読み込み中...(0%)";
+            progressContainer.classList.remove('hidden');
+            progressBar.style.width = '0%';
+
+            const file = e.target.files[0];
+            const reader = new FileReader();
+
+            reader.onprogress = function(event) {
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    statusMsg.textContent = "ファイル読み込み中...(" + percent + "%)";
+                }
+            };
+
+            reader.onload = function(evt) {
+                try {
+                    statusMsg.textContent = "ファイルを解析して集計中...";
+                    const data = new Uint8Array(evt.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    
+                    let found = false;
+                    globalEmployeeDatabase = {};
+                    const cleanStr = (s) => String(s).replace(/\s/g, "");
+
+                    for (let sheetName of workbook.SheetNames) {
+                        const sheet = workbook.Sheets[sheetName];
+                        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+                        
+                        for (let i = 0; i < rows.length; i++) {
+                            const row = rows[i].map(c => String(c).trim());
+                            const idx = {
+                                empId: row.findIndex(c => cleanStr(c).includes("社員番号")),
+                                work: row.findIndex(c => cleanStr(c).includes("作業時間")),
+                                nOver: row.findIndex(c => cleanStr(c).includes("普通残業")),
+                                sOver: row.findIndex(c => cleanStr(c).includes("深夜残業"))
+                            };
+
+                            if (idx.empId !== -1 && idx.work !== -1 && idx.nOver !== -1 && idx.sOver !== -1) {
+                                for (let j = i + 1; j < rows.length; j++) {
+                                    const r = rows[j];
+                                    const id = String(r[idx.empId] || "").trim();
+                                    if (!id) continue;
+                                    
+                                    const vWork = parseFloat(r[idx.work]) || 0;
+                                    const vN = parseFloat(r[idx.nOver]) || 0;
+                                    const vS = parseFloat(r[idx.sOver]) || 0;
+
+                                    if (!globalEmployeeDatabase[id]) {
+                                        globalEmployeeDatabase[id] = { count: 0, work: 0, nOver: 0, sOver: 0, maxW: -Infinity, minW: Infinity, maxN: -Infinity, minN: Infinity, maxS: -Infinity, minS: Infinity };
+                                    }
+                                    const d = globalEmployeeDatabase[id];
+                                    d.count++;
+                                    d.work += vWork;
+                                    d.nOver += vN;
+                                    d.sOver += vS;
+                                    d.maxW = Math.max(d.maxW, vWork); d.minW = Math.min(d.minW, vWork);
+                                    d.maxN = Math.max(d.maxN, vN); d.minN = Math.min(d.minN, vN);
+                                    d.maxS = Math.max(d.maxS, vS); d.minS = Math.min(d.minS, vS);
+                                }
+                                found = true;
+                            }
+                        }
+                    }
+
+                    if (!found) throw new Error("対象のデータ列(社員番号, 作業時間, 普通残業, 深夜残業)が見つかりませんでした。");
+                    
+                    progressContainer.classList.add('hidden');
+                    statusMsg.className = "p-4 rounded mb-4 bg-green-100 text-green-700";
+                    statusMsg.textContent = "解析完了: " + Object.keys(globalEmployeeDatabase).length + "名分を集計しました。";
+                    renderTable();
+                } catch (err) {
+                    progressContainer.classList.add('hidden');
+                    statusMsg.className = "p-4 rounded mb-4 bg-red-100 text-red-700";
+                    statusMsg.textContent = "エラー: " + err.message;
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        function handleSort(col) {
+            if (sortCol === col) {
+                sortAsc = !sortAsc;
+            } else {
+                sortCol = col;
+                sortAsc = true;
+            }
+            renderTable();
+        }
+
+        function getSortIndicator(col) {
+            return sortCol === col ? (sortAsc ? ' ▲' : ' ▼') : '';
+        }
+
+        function renderTable() {
+            const container = document.getElementById('tableContainer');
+            if (Object.keys(globalEmployeeDatabase).length === 0) return;
+
+            let keys = specificId ? [specificId] : Object.keys(globalEmployeeDatabase);
+            
+            let dataArr = keys.map(id => {
+                const d = globalEmployeeDatabase[id];
+                return {
+                    id: id,
+                    w: d.work/d.count,
+                    n: d.nOver/d.count,
+                    s: d.sOver/d.count,
+                    maxW: d.maxW, minW: d.minW,
+                    maxN: d.maxN, minN: d.minN,
+                    maxS: d.maxS, minS: d.minS
+                };
+            });
+
+            dataArr.sort((a, b) => {
+                let valA = a[sortCol];
+                let valB = b[sortCol];
+                
+                if (sortCol === 'id') return sortAsc ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
+                return sortAsc ? valA - valB : valB - valA;
+            });
+
+            let html = `<p class="text-xs text-gray-500 mb-1">クリックでソート(昇順/降順)</p>`;
+            html += `<table class="w-full text-left text-sm border-collapse"><thead><tr class="bg-gray-100">`;
+            // ヘッダーに whitespace-nowrap を追加して改行を抑制
+            html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('id')">社員番号${getSortIndicator('id')}</th>`;
+            
+            if(currentMode === 'avg') {
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('w')">平均作業時間${getSortIndicator('w')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('n')">平均普通残業時間${getSortIndicator('n')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('s')">平均深夜残業時間${getSortIndicator('s')}</th>`;
+            } else {
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('maxW')">作業時間<br>(最大)${getSortIndicator('maxW')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('minW')">作業時間<br>(最小)${getSortIndicator('minW')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('maxN')">普通残業時間<br>(最大)${getSortIndicator('maxN')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('minN')">普通残業時間<br>(最小)${getSortIndicator('minN')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('maxS')">深夜残業時間<br>(最大)${getSortIndicator('maxS')}</th>`;
+                html += `<th class="p-3 border sortable whitespace-nowrap" onclick="handleSort('minS')">深夜残業時間<br>(最小)${getSortIndicator('minS')}</th>`;
+            }
+            html += `</tr></thead><tbody>`;
+            
+            for(let item of dataArr) {
+                html += `<tr class="hover:bg-gray-50 ${item.id === specificId ? 'bg-blue-50' : ''}">`;
+                html += `<td class="p-3 border font-semibold">${item.id}</td>`;
+                if(currentMode === 'avg') {
+                    html += `<td class="p-3 border">${item.w.toFixed(1)}</td><td class="p-3 border">${item.n.toFixed(1)}</td><td class="p-3 border">${item.s.toFixed(1)}</td>`;
+                } else {
+                    html += `<td class="p-3 border">${item.maxW}</td><td class="p-3 border">${item.minW}</td>`;
+                    html += `<td class="p-3 border">${item.maxN}</td><td class="p-3 border">${item.minN}</td>`;
+                    html += `<td class="p-3 border">${item.maxS}</td><td class="p-3 border">${item.minS}</td>`;
+                }
+                html += `</tr>`;
+            }
+            container.innerHTML = html + "</tbody></table>";
+        }
+
+        function addMemo() {
+            const input = document.getElementById('memoInput');
+            const board = document.getElementById('memoBoard');
+            if(!input.value) return;
+            const memoDiv = document.createElement('div');
+            memoDiv.className = "border-b p-2";
+            memoDiv.textContent = new Date().toLocaleTimeString() + " : " + input.value;
+            board.appendChild(memoDiv);
+            input.value = "";
+            board.scrollTop = board.scrollHeight;
+        }
+    </script>
+</body>
+</html>
